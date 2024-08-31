@@ -5,7 +5,6 @@ import pprint
 from typing import List, Tuple, Union, Dict
 import errant
 from dataclasses import dataclass, field
-from tabulate import tabulate
 
 class Score:
     def __init__(
