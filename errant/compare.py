@@ -4,6 +4,79 @@ import copy
 import pprint
 from typing import List, Tuple, Union, Dict
 import errant
+from dataclasses import dataclass, field
+from tabulate import tabulate
+
+class Score:
+    def __init__(
+        self,
+        tp: int = 0,
+        fp: int = 0,
+        fn: int = 0,
+        beta: float = 0.5
+    ):
+        self.tp: int = tp
+        self.fp: int = fp
+        self.fn: int = fn
+        self.beta: float = beta
+        self.precision: float = 0
+        self.recall: float = 0
+        self.f: float = 0
+        self.calc_f()
+    
+    def add(self, other):
+        '''Changes its own values.
+        '''
+        self.tp += other.tp
+        self.fp += other.fp
+        self.fn += other.fn
+        self.calc_f()
+
+    def __add__(self, other):
+        '''Returns another object and does not change its own values.
+        This overloads "+".
+        '''
+        return self.__class__(
+            tp=self.tp + other.tp,
+            fp=self.fp + other.fp,
+            fn=self.fn + other.fn,
+            beta=self.beta
+        )
+    
+    def add_tp(self, num=1):
+        self.tp += num
+        self.calc_f()
+
+    def add_fp(self, num=1):
+        self.fp += num
+        self.calc_f()
+
+    def add_fn(self, num=1):
+        self.fn += num
+        self.calc_f()
+    
+    def get_beta(self):
+        return self.beta
+
+    def calc_f(self):
+        tp = self.tp
+        fp = self.fp
+        fn = self.fn
+        beta = self.beta
+        p = float(tp)/(tp+fp) if fp else 1.0
+        r = float(tp)/(tp+fn) if fn else 1.0
+        self.f = float((1+(beta**2))*p*r)/(((beta**2)*p)+r) if p+r else 0.0
+        self.precision = p
+        self.recall = r
+
+    def __repr__(self):
+        return f"[TP={self.tp}, FP={self.fp}, FN={self.fn}, Precision={self.precision}, Recall={self.recall}, F_{self.beta}={self.f}]"
+
+@dataclass
+class ERRANTCompareOutput:
+    overall: Score
+    etype: Dict[str, Score]
+    best_ref_ids: List[int]
 
 def check_num_sents(
     srcs: List[str],
@@ -20,16 +93,14 @@ def compare_from_raw(
     cor: List[str],
     refs: List[List[str]],
     beta: float=0.5,
-    cat: int=1,
+    cat: int=2,
     mode='cs',
     single: bool=False,
     multi: bool=False,
     filt: List[str]=[],
-    verbose: bool=False
-) -> Tuple[
-        Dict[str, Union[int, float]],
-        Dict[str, Dict[str, Union[int, float]]]
-    ]:
+    verbose: bool=False,
+    annotator=None
+) -> ERRANTCompareOutput:
     '''errant_compare given the raw text
     Args:
         orig: Original sentences
@@ -51,21 +122,15 @@ def compare_from_raw(
         filt: Do not evaluate the specified error types.
         verbose: Print verbose output.
     Returns:
-        overall_score: The key is {'tp', 'fp', 'fn', 'p', 'r', 'f_{beta}'}.
-        etype_score: Error-type-wise score. 
-            This is two dimensional dictionaly.
-            The first key is error type.
-            The second key is {'tp', 'fp', 'fn', 'p', 'r', 'f_{beta}'}.
-            The values is the number of corrections.
+        ERRANTCompareOutput: The evaluation scores.
     '''
     # The references must be a two dimensions list
     if not isinstance(refs[0], list):
         # The shape of refs must be (num_annotations, num_sents)
         refs = [refs]
-    check_num_sents(
-        orig, cor, refs
-    )
-    annotator = errant.load('en')
+    check_num_sents(orig, cor, refs)
+    if annotator is None:
+        annotator = errant.load('en')
     # Parse each sentences
     orig = [annotator.parse(o) for o in orig]
     cor = [annotator.parse(c) for c in cor]
@@ -73,7 +138,7 @@ def compare_from_raw(
     # Generate Edit objects
     hyp_edits = [annotator.annotate(o, c) for o, c in zip(orig, cor)]
     ref_edits = [[annotator.annotate(o, r) for o, r in zip(orig, ref)] for ref in refs]
-    overall_score, etype_score = compare_from_edits(
+    output = compare_from_edits(
         hyp_edits,
         ref_edits,
         beta=beta,
@@ -84,58 +149,21 @@ def compare_from_raw(
         filt=filt,
         verbose=verbose
     )
-    return overall_score, etype_score
-
-def compute_f(tp: int, fp: int, fn: int, beta: float):
-    '''Compute F_{beta} score given TP, FP, FN.
-    This is copied from official imlementation:
-        https://github.com/chrisjbryant/errant
-    '''
-    p = float(tp)/(tp+fp) if fp else 1.0
-    r = float(tp)/(tp+fn) if fn else 1.0
-    f = float((1+(beta**2))*p*r)/(((beta**2)*p)+r) if p+r else 0.0
-    return round(p, 4), round(r, 4), round(f, 4)
+    return output
 
 def can_update_best(
-    current_score: Dict[str, Dict[str, Union[int, float]]],
-    new_score: Dict[str, Dict[str, Union[int, float]]],
-    beta: float=0.5
+    best: Score,
+    candidate: Score
 ):
     '''Check whether the new_score outperforms the current best score.
+    Compare in order of priority F, TP, FP, FN.
     '''
-    # The inputs are error-type-wise scores, so we first convert them to entire score
-    current_overall_score = calc_overall_score(current_score)
-    new_overall_score = calc_overall_score(new_score)
-    # Compute F_{beta} given TP/FP/FN
-    cp, cr, cf = compute_f(
-        current_overall_score['tp'],
-        current_overall_score['fp'],
-        current_overall_score['fn'],
-        beta
-    )
-    np, nr, nf = compute_f(
-        new_overall_score['tp'],
-        new_overall_score['fp'],
-        new_overall_score['fn'],
-        beta
-    )
-    # This rule is the same as original implementation.
-    if nf > cf:
-        return True
-    if nf == cf and new_overall_score['tp'] > current_overall_score['tp']:
-        return True
-    if nf == cf and new_overall_score['tp'] == current_overall_score['tp'] \
-        and new_overall_score['fp'] < current_overall_score['fp']:
-        return True
-    if nf == cf and new_overall_score['tp'] == current_overall_score['tp'] \
-        and new_overall_score['fp'] == current_overall_score['fp'] \
-        and new_overall_score['fn'] < current_overall_score['fn']:
-        return True
-    return False
+    return [best.f, best.tp, -best.fp, -best.fn] \
+        < [candidate.f, candidate.tp, -candidate.fp, -candidate.fn]
 
 def filter_edits(
     edits: List[List[Edit]],
-    cat: int=1,
+    cat: int=2,
     mode: str='cs',
     single: bool=False,
     multi: bool=False,
@@ -170,7 +198,7 @@ def filter_edits(
 
             # Process the error type
             if mode == 'cse':
-                e.c_str = e.c_str + e.type
+                e.c_str = e.c_str + '[SEP]' + e.type
             if cat == 1:
                 # e.g. 'M:NOUN:NUM' -> 'M'
                 e.type = e.type[0] if e.type != 'UNK' else 'UNK'
@@ -179,46 +207,50 @@ def filter_edits(
                 e.type = e.type[2:] if e.type != 'UNK' else 'UNK'
 
             if mode == 'dt':
-                if e.o_start != -1 and e.o_start == e.o_end and e.o_start >= 0:
+                # Insertion edit but not noop
+                if e.o_start == e.o_end and e.o_start >= 0:
                     e.o_end = e.o_start + 1
+                    l.append(e)
                 elif e.o_start != e.o_end:
                     for tok_id in range(e.o_start, e.o_end):
                         new_edit = copy.copy(e)
                         new_edit.o_start = tok_id
                         new_edit.o_end = tok_id + 1
-                        l.append(copy.copy(new_edit))
-                    e = None
-            if e is not None:
+                        l.append(new_edit)
+                else:
+                    l.append(e)
+            else:
                 l.append(e)
         new_edits.append(l)
     return new_edits
     
-def calc_overall_score(score: Dict[str, Dict[str, int]]) -> Dict[str, int]:
+def calc_overall_score(
+    score: Dict[str, Score]
+) -> Score:
     '''Convert error type based scores into an entire score.
-    Args:
-        score: Dict[str, Dict[str, int]]
-            The first key is error type.
-            The second key is 'tp' or 'fp' or 'fn'.
-            The values is the number of corrections.
     '''
-    overall_score = {'tp': 0, 'fp': 0, 'fn': 0}
+    # If there is no scores, it retuns initialized instance.
+    # This corresponds to the situation of src == trg == hyp.
+    if len(score) == 0:
+        return Score()
+    beta = list(score.values())[0].get_beta()
+    overall = Score(beta=beta)
     for etype in score:
-        for k in ['tp', 'fp', 'fn']:
-            overall_score[k] += score[etype][k]
-    return overall_score
+        overall.add(score[etype])
+    return overall
 
-def merge_dict(
-    d1: Dict[str, Dict[str, int]],
-    d2: Dict[str, Dict[str, int]]
-):
+def merge_etype_scores(
+    d1: Dict[str, Score],
+    d2: Dict[str, Score]
+) -> Dict[str, Score]:
     '''Add d2 information to d1
     '''
-    if d1 is None:
-        return d2
+    if d2 == {}:
+        return d1
+    beta = list(d2.values())[0].get_beta()
     for etype in d2.keys():
-        d1[etype] = d1.get(etype, {'tp': 0, 'fp': 0, 'fn': 0})
-        for k in ['tp', 'fp', 'fn']:
-            d1[etype][k] += d2[etype][k]
+        d1[etype] = d1.get(etype, Score(beta=beta))
+        d1[etype].add(d2[etype])
     return d1
 
 def print_table(table):
@@ -238,7 +270,7 @@ def compare_from_edits(
     hyp_edits: List[List[Edit]],  # (num_sents, num_edits)
     ref_edits: List[List[List[Edit]]],  # (num_annotations, num_sents, num_edts)
     beta: float=0.5,
-    cat: int=1,
+    cat: int=2,
     mode='cs',
     single: bool=False,
     multi: bool=False,
@@ -264,71 +296,73 @@ def compare_from_edits(
     ref_edits = [filter_edits(r, **filter_args) for r in ref_edits]
     for ref_id in range(len(ref_edits)):
         assert len(hyp_edits) == len(ref_edits[ref_id])
-    etype_score = None  # This will be final scores
+    final_etype_score = {}
+    final_overall_score = Score(beta=beta)
     num_annotator = len(ref_edits)
     num_sents = len(ref_edits[0])
+    best_ref_ids = []
     for sent_id in range(num_sents):
         # best_score: sentence-level best score
-        best_score: Dict[str, Dict[str, int]] = None
-        best_ref = 0
+        best_score: Dict[str, Score] = dict()
+        best_ref_id = 0
+        best_r_edits = None
+        best_h_edits = None
         for ref_id in range(num_annotator):
-            current_score = dict()
+            candidate_score = dict()
             h_edits = hyp_edits[sent_id]
             r_edits = ref_edits[ref_id][sent_id]
             # True positive and False negative
             for edit in r_edits:
-                current_score[edit.type] = current_score.get(
+                candidate_score[edit.type] = candidate_score.get(
                     edit.type,
-                    {'tp': 0, 'fp': 0, 'fn': 0}
+                    Score(beta=beta)
                 )
                 if edit in h_edits:
-                    current_score[edit.type]['tp'] += 1
+                    candidate_score[edit.type].add_tp()
                 else:
-                    current_score[edit.type]['fn'] += 1
+                    candidate_score[edit.type].add_fn()
             # False positive
             for edit in h_edits:
                 if edit not in r_edits:
-                    current_score[edit.type] = current_score.get(
+                    candidate_score[edit.type] = candidate_score.get(
                         edit.type,
-                        {'tp': 0, 'fp': 0, 'fn': 0}
+                        Score(beta=beta)
                     )
-                    current_score[edit.type]['fp'] += 1
+                    candidate_score[edit.type].add_fp()
             # Update the best sentence-level score
-            if best_score is None:
-                best_score = current_score
-            elif can_update_best(
-                merge_dict(copy.deepcopy(etype_score), best_score),
-                merge_dict(copy.deepcopy(etype_score), current_score),
-                beta
-            ):
-                # For the second or subsequent reference, chose the best one
-                # Note that the comparison is based on the value when added to the cumulative score so far
-                best_score = current_score
-                best_ref = ref_id
+            if ref_id == 0:
+                best_score = candidate_score
+                best_ref_id = ref_id
+                best_h_edits = h_edits
+                best_r_edits = r_edits
+            else:
+                best_overall = calc_overall_score(best_score)
+                candidate_overall = calc_overall_score(candidate_score)
+                if can_update_best(
+                    (final_overall_score + best_overall),
+                    (final_overall_score + candidate_overall),
+                ):
+                    best_score = candidate_score
+                    best_ref_id = ref_id
+                    best_h_edits = h_edits
+                    best_r_edits = r_edits
+        final_etype_score = merge_etype_scores(final_etype_score, best_score)
+        final_overall_score = calc_overall_score(final_etype_score)
+        best_ref_ids.append(best_ref_id)
         if verbose:
             print('{:-^40}'.format(""))
-            print(f'^^ HYP 0, REF {best_ref} chosen for sentence {sent_id}')
+            print(f'^^ HYP 0, REF {best_ref_id} chosen for sentence {sent_id}')
             print('Local results:')
             header = ["Category", "TP", "FP", "FN"]
-            body = [[k, v['tp'], v['fp'], v['fn']] for k, v in best_score.items()]
+            body = [[k, v.tp, v.fp, v.fn] for k, v in best_score.items()]
             print_table([header] + body)
-        # Add to the best sentence-level score to the overall score
-        etype_score = merge_dict(etype_score, best_score)
-    # Calculate precision, recall, F_{beta} for each error type
-    for etype in etype_score.keys():
-        etype_score[etype]['p'], etype_score[etype]['r'], etype_score[etype][f'f_{beta}'] = compute_f(
-            etype_score[etype]['tp'],
-            etype_score[etype]['fp'],
-            etype_score[etype]['fn'],
-            beta
-        )
-    # Calculate overall score from error type wise score
-    overall_score = calc_overall_score(etype_score)
-    # And precision, recall and F_{beta}
-    overall_score['p'], overall_score['r'], overall_score[f'f_{beta}'] = compute_f(
-        overall_score['tp'],
-        overall_score['fp'],
-        overall_score['fn'],
-        beta
+            print('Hypothesis:', [(e.o_start, e.o_end, e.c_str) for e in best_h_edits])
+            print('Best References:', [(e.o_start, e.o_end, e.c_str) for e in best_r_edits])
+            print('Local:', calc_overall_score(best_score))
+            print('Global:', final_overall_score)
+    
+    return ERRANTCompareOutput(
+        overall=final_overall_score,
+        etype=final_etype_score,
+        best_ref_ids=best_ref_ids
     )
-    return overall_score, etype_score

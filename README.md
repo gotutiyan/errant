@@ -1,3 +1,79 @@
+# API-based ERRANT Compare
+
+This forked repository supports API-based errant_compare.
+
+- From raw text
+```py
+import errant
+orig_raw = ['This are gramamtical sentence .']
+cor_raw = ['This is grammatical sentence .']
+# refs_raw: List[List[str]] = (num_annotation, num_sents)
+refs_raw = [
+    ['This is a grammatical sentence .'],
+    ['These are grammatical sentences .']
+]
+output: errant.compare.ERRANTCompareOutput = errant.compare_from_raw(
+    orig=orig_raw,
+    cor=cor_raw,
+    refs=refs_raw,
+    beta=0.5,  # beta for F-score
+    cat=3,  # can be 1, 2, 3
+    single=False,
+    multi=False,
+    mode='cs',  # can be 'cs', 'ds', 'dt', 'cse'
+    filt=[]  # error type filtering
+)
+print('Overall score')
+print(output.overall)  # You can also use output.overall.tp (or .fp .fn .precision .recall .f)
+print('Error type based scores')
+print(output.etype)
+print('Selected reference-id for each input')
+print(output.best_ref_ids)
+
+'''Output
+Overall score
+[TP=2, FP=0, FN=1, Precision=1.0, Recall=0.6666666666666666, F_0.5=0.9090909090909091]
+Error type based scores
+{
+    'R:VERB:SVA': [TP=1, FP=0, FN=0, Precision=1.0, Recall=1.0, F_0.5=1.0],
+    'M:DET': [TP=0, FP=0, FN=1, Precision=1.0, Recall=0.0, F_0.5=0.0],
+    'R:SPELL': [TP=1, FP=0, FN=0, Precision=1.0, Recall=1.0, F_0.5=1.0]
+}
+Selected reference-id for each input
+[0]
+'''
+```
+
+- From edits
+```py
+import errant
+import pprint
+annotator = errant.load('en')
+orig_raw = ['This are gramamtical sentence .']
+cor_raw = ['This is grammatical sentence .']
+# refs_raw: List[List[str]] = (num_annotation, num_sents)
+# This contains two annotations for one sentence
+refs_raw = [
+    ['This is a grammatical sentence .'],
+    ['These are grammatical sentences .']
+]
+orig = [annotator.parse(o) for o in orig_raw]
+cor = [annotator.parse(c) for c in cor_raw]
+refs = [[annotator.parse(r) for r in ref] for ref in refs_raw]
+hyp_edits = [annotator.annotate(o, c) for o, c in zip(orig, cor)]
+ref_edits = [[annotator.annotate(o, r) for o, r in zip(orig, ref)] for ref in refs]
+output: errant.compare.ERRANTCompareOutput = errant.compare_from_edits(
+    hyp_edits=hyp_edits,
+    ref_edits=ref_edits,
+    beta=0.5,
+    cat=3,
+    single=False,
+    multi=False,
+    mode='cs',
+    filt=[]
+)
+```
+
 # ERRANT v3.0.0
 
 This repository contains the grammatical ERRor ANnotation Toolkit (ERRANT) described in:
@@ -179,81 +255,6 @@ cor = annotator.parse('This is a grammatical sentence .')
 edit = [1, 2, 1, 2, 'SVA'] # are -> is
 edit = annotator.import_edit(orig, cor, edit)
 print(edit.to_m2())
-```
-
-### API-based errant_compare
-
-It provides API-based errant_compare.
-
-- From raw text
-```py
-import errant
-import pprint
-orig_raw = ['This are gramamtical sentence .']
-cor_raw = ['This is grammatical sentence .']
-# refs_raw: List[List[str]] = (num_annotation, num_sents)
-refs_raw = [
-    ['This is a grammatical sentence .'],
-    ['These are grammatical sentences .']
-]
-overall_score, etype_score = errant.compare_from_raw(
-    orig=orig_raw,
-    cor=cor_raw,
-    refs=refs_raw,
-    beta=0.5,  # beta for F-score
-    cat=1,  # can be 1, 2, 3
-    single=False,
-    multi=False,
-    mode='cs',  # can be 'cs', 'ds', 'dt', 'cse'
-    filt=[]  # error type filtering
-)
-
-print('=== etype score ===')
-pprint.pprint(etype_score, width=100)
-print('=== overall score ===')
-print(overall_score)
-"""
-=== etype score ===
-{'M': {'f_0.5': 0.0, 'fn': 1, 'fp': 0, 'p': 1.0, 'r': 0.0, 'tp': 0},
- 'R': {'f_0.5': 1.0, 'fn': 0, 'fp': 0, 'p': 1.0, 'r': 1.0, 'tp': 2}}
-=== overall score ===
-{'tp': 2, 'fp': 0, 'fn': 1, 'p': 1.0, 'r': 0.6667, 'f_0.5': 0.9091}
-"""
-```
-
-- From edits
-```py
-import errant
-import pprint
-annotator = errant.load('en')
-orig_raw = ['This are gramamtical sentence .']
-cor_raw = ['This is grammatical sentence .']
-# refs_raw: List[List[str]] = (num_annotation, num_sents)
-# This contains two annotations for one sentence
-refs_raw = [
-    ['This is a grammatical sentence .'],
-    ['These are grammatical sentences .']
-]
-orig = [annotator.parse(o) for o in orig_raw]
-cor = [annotator.parse(c) for c in cor_raw]
-refs = [[annotator.parse(r) for r in ref] for ref in refs_raw]
-hyp_edits = [annotator.annotate(o, c) for o, c in zip(orig, cor)]
-ref_edits = [[annotator.annotate(o, r) for o, r in zip(orig, ref)] for ref in refs]
-entire_score, etype_score = errant.compare_from_edits(
-    hyp_edits=hyp_edits,
-    ref_edits=ref_edits,
-    beta=0.5,
-    cat=1,
-    single=False,
-    multi=False,
-    mode='cs',
-    filt=[]
-)
-
-print('=== etype score ===')
-pprint.pprint(etype_score, width=100)
-print('=== entire score ===')
-print(entire_score)
 ```
 
 ### Alignment Objects
